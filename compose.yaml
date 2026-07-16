@@ -46,6 +46,22 @@ services:
       - ./data:/data
     depends_on:
       - tile-db
+      - chroma
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+    networks:
+      - glazed
+
+  chroma:
+    image: docker.io/chromadb/chroma:latest
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./data/chroma:/chroma/chroma
     networks:
       - glazed
 
