@@ -118,6 +118,54 @@ function rgbFamily(r, g, b) {
   return 'unknown';
 }
 
+function hueDistance(a, b) {
+  const difference = Math.abs(a - b) % 360;
+  return Math.min(difference, 360 - difference);
+}
+
+function rgbColorFamilyScore(family, r, g, b) {
+  const [hue, saturation, value] = rgbToHsv(r, g, b);
+  const saturationScore = clamp01((saturation - 0.04) / 0.36);
+  const hueScore = (target, tolerance) => clamp01(1 - hueDistance(hue, target) / tolerance);
+
+  switch (family) {
+    case 'black':
+      return clamp01((0.3 - value) / 0.24);
+    case 'white':
+      return clamp01((value - 0.72) / 0.24) * clamp01((0.18 - saturation) / 0.15);
+    case 'gray':
+      return clamp01((0.2 - saturation) / 0.16) * clamp01(1 - Math.abs(value - 0.55) / 0.5);
+    case 'cream':
+      return hueScore(45, 48)
+        * clamp01((value - 0.62) / 0.28)
+        * clamp01(1 - Math.abs(saturation - 0.16) / 0.2);
+    case 'brown': {
+      const brownHue = hueScore(35, 38);
+      const brownSaturation = clamp01((saturation - 0.07) / 0.28);
+      const brightTanAllowance = 1 - clamp01((value - 0.86) / 0.14) * 0.55;
+      return brownHue * brownSaturation * brightTanAllowance;
+    }
+    case 'red':
+      return hueScore(0, 38) * saturationScore;
+    case 'orange':
+      return hueScore(28, 28) * saturationScore;
+    case 'yellow':
+      return hueScore(55, 28) * saturationScore;
+    case 'green':
+      return hueScore(120, 62) * saturationScore;
+    case 'cyan':
+      return hueScore(180, 42) * saturationScore;
+    case 'blue':
+      return hueScore(225, 55) * saturationScore;
+    case 'purple':
+      return hueScore(275, 42) * saturationScore;
+    case 'pink':
+      return hueScore(325, 38) * saturationScore;
+    default:
+      return 0;
+  }
+}
+
 function clamp01(value) {
   return Math.max(0, Math.min(1, Number(value) || 0));
 }
@@ -144,28 +192,47 @@ function legacyColorIntentScore(query, row) {
 
   const tokens = queryTokens(query);
   const [r, g, b] = labToRgb(Number(row.Color_L), Number(row.Color_A), Number(row.Color_B));
+  const requestedFamilies = new Set(tokens.map((token) => FAMILY_ALIASES[token]).filter(Boolean));
   const warmth = Math.max(0, (r + 0.45 * g - 1.2 * b) / 255);
   const coolness = Math.max(0, (b + 0.35 * g - 1.05 * r) / 255);
-  const redness = Math.max(0, (r - Math.max(g, b)) / 255);
-  const blueness = Math.max(0, (b - Math.max(r, g)) / 255);
-  const earthiness = Math.max(0, (r + g - b) / 510);
   const brightness = Number(row.Color_L) / 100;
   let score = 0;
+  let factors = 0;
 
-  if (tokens.includes('red')) score += redness;
-  if (tokens.includes('warm')) score += warmth;
-  if (tokens.includes('blue')) score += blueness;
-  if (tokens.includes('cold') || tokens.includes('cool')) score += coolness;
-  if (tokens.some((token) => ['bright', 'light', 'pale'].includes(token))) score += brightness;
-  if (tokens.some((token) => ['lighter', 'brighter'].includes(token))) score += targetLightnessScore(brightness, 0.68);
-  if (tokens.includes('dark') || tokens.includes('deep')) score += 1 - brightness;
-  if (tokens.includes('darker') || tokens.includes('deeper')) score += targetLightnessScore(brightness, 0.38);
-  if (tokens.some((token) => ['brown', 'earth', 'rustic'].includes(token))) {
-    score += earthiness;
+  for (const family of requestedFamilies) {
+    score += rgbColorFamilyScore(family, r, g, b);
+    factors += 1;
   }
-  if (tokens.includes('cream') || tokens.includes('white')) score += brightness * 0.6;
+  if (tokens.includes('warm')) {
+    score += warmth;
+    factors += 1;
+  }
+  if (tokens.includes('cold') || tokens.includes('cool')) {
+    score += coolness;
+    factors += 1;
+  }
+  if (tokens.some((token) => ['bright', 'light', 'pale'].includes(token))) {
+    score += brightness;
+    factors += 1;
+  }
+  if (tokens.some((token) => ['lighter', 'brighter'].includes(token))) {
+    score += targetLightnessScore(brightness, 0.68);
+    factors += 1;
+  }
+  if (tokens.includes('dark') || tokens.includes('deep')) {
+    score += 1 - brightness;
+    factors += 1;
+  }
+  if (tokens.includes('darker') || tokens.includes('deeper')) {
+    score += targetLightnessScore(brightness, 0.38);
+    factors += 1;
+  }
+  if (tokens.some((token) => ['earth', 'earthy', 'rustic'].includes(token))) {
+    score += rgbColorFamilyScore('brown', r, g, b);
+    factors += 1;
+  }
 
-  return score;
+  return factors ? score / factors : 0;
 }
 
 const FAMILY_ALIASES = {
@@ -305,6 +372,24 @@ function parseQueryIntent(query) {
     wantsDarkEdges,
     wantsLightEdges,
   };
+}
+
+function requestedColorFamilies(query) {
+  return [...new Set(queryTokens(query).map((token) => FAMILY_ALIASES[token]).filter(Boolean))];
+}
+
+function explicitColorMatchScore(families, row) {
+  if (families.length === 0) return 0;
+
+  const profile = colorProfile(row);
+  const colors = dominantColors(row);
+  const [r, g, b] = displayRgb(row);
+  return Math.max(...families.map((family) => {
+    const profileScore = familyPercent(row, family, profile, colors);
+    const primaryBoost = String(row.PrimaryColor || '').toLowerCase() === family ? 0.2 : 0;
+    const rgbScore = rgbColorFamilyScore(family, r, g, b);
+    return clamp01(Math.max(profileScore + primaryBoost, rgbScore));
+  }));
 }
 
 function colorIntentScore(query, row) {
@@ -630,6 +715,8 @@ const DEFAULT_RANKING_WEIGHTS = {
   bias: 0,
   clipScore: 1,
   colorScore: 0.22,
+  explicitColorScore: 0.85,
+  colorMismatchPenalty: -1.1,
   metadataScore: 0.12,
   visualScore: 0.18,
   visualPenalty: -0.82,
@@ -907,6 +994,10 @@ async function runSearch(query) {
 
   const textEmbedding = await getTextEmbedding(query, rows, modelState);
   const rankingWeights = await getRankingWeights();
+  const globalColorQuery = intent.positiveQuery
+    .replace(/\b(?:black|blue|brown|cream|gray|green|grey|orange|pink|purple|red|white|yellow)\s+(?:edge|edges|border|borders|rim|rims|frame|outline)\b/g, ' ')
+    .trim();
+  const explicitColorFamilies = requestedColorFamilies(globalColorQuery);
 
   const rankedResults = rows.map((row) => {
     const cachedEmbedding = embeddings[cacheKeyFor(row)];
@@ -916,10 +1007,14 @@ async function runSearch(query) {
     const visualScore = visualIntentScore(intent, row);
     const lightness = weightedLightness(row);
     const exclusionPenalty = visualScore.penalty > 0.22 ? visualScore.penalty * 0.75 : 0;
+    const explicitColorScore = explicitColorMatchScore(explicitColorFamilies, row);
+    const colorMismatchPenalty = explicitColorFamilies.length > 0 ? 1 - explicitColorScore : 0;
     const features = {
       bias: 1,
       clipScore,
       colorScore,
+      explicitColorScore,
+      colorMismatchPenalty,
       metadataScore: textScore,
       visualScore: visualScore.score,
       visualPenalty: visualScore.penalty,
@@ -935,6 +1030,8 @@ async function runSearch(query) {
       finalScore,
       clipScore,
       colorScore,
+      explicitColorScore,
+      colorMismatchPenalty,
       metadataScore: textScore,
       visualScore: visualScore.score,
       visualPenalty: visualScore.penalty,
@@ -966,9 +1063,13 @@ async function runSearch(query) {
   const maxScore = results[0]?.finalScore ?? 0;
   const minScore = results.at(-1)?.finalScore ?? maxScore;
   for (const result of results) {
-    result.matchScore = maxScore === minScore
+    const relativeMatchScore = maxScore === minScore
       ? 1
       : 0.55 + ((result.finalScore - minScore) / (maxScore - minScore)) * 0.44;
+    const colorConfidence = explicitColorFamilies.length > 0
+      ? 0.3 + result.explicitColorScore * 0.7
+      : 1;
+    result.matchScore = relativeMatchScore * colorConfidence;
   }
 
   return {
