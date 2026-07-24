@@ -47,6 +47,7 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: 8000
       HF_HOME: /data/huggingface
+      HF_HUB_DISABLE_XET: "1"
     volumes:
       - ./data:/data
     depends_on:
