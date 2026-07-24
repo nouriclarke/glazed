@@ -44,10 +44,14 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
+      CHROMA_HOST: chroma
+      CHROMA_PORT: 8000
+      HF_HOME: /data/huggingface
     volumes:
       - ./data:/data
     depends_on:
       - tile-db
+      - chroma
     networks:
       - glazed
 
@@ -56,7 +60,7 @@ services:
     ports:
       - "8001:8000"
     volumes:
-      - ./data/chroma:/chroma/chroma
+      - ./data/chroma:/data
     networks:
       - glazed
 
