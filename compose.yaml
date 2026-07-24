@@ -20,6 +20,7 @@ services:
       - "80:80"
     depends_on:
       - tile-db
+      - glaze-daemon
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
