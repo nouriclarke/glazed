@@ -25,6 +25,8 @@ const EMBEDDING_PREFILTER = Math.max(0, Math.floor(numberEnv('EMBEDDING_PREFILTE
 const ARGS = process.argv.slice(2);
 const STDIO_MODE = ARGS.includes('--stdio');
 const QUERY = ARGS.filter((arg) => arg !== '--stdio').join(' ').trim();
+let workerRowsCache = null;
+let workerRowsRevision = null;
 
 env.cacheDir = CACHE_DIR;
 env.localModelPath = CACHE_DIR;
@@ -788,6 +790,12 @@ async function loadTiles() {
       tp.AutoTags,
       tp.AutoKeywords
     FROM testpiece tp
+    INNER JOIN (
+      SELECT MIN(ID) AS ID
+      FROM testpiece
+      WHERE Image IS NOT NULL
+      GROUP BY SHA2(Image, 256)
+    ) canonical ON canonical.ID = tp.ID
     LEFT JOIN glazetype gt ON tp.GlazeTypeID = gt.ID
     LEFT JOIN surfacecondition sc ON tp.SurfaceConditionID = sc.ID
     WHERE tp.Image IS NOT NULL
@@ -820,8 +828,38 @@ async function loadTiles() {
   return rows;
 }
 
+async function getTileRevision() {
+  const conn = await mysql.createConnection({
+    host: hostDatabaseValue(),
+    port: Number(process.env.DB_PORT || 3306),
+    user: process.env.DB_USER || 'ceramadmin',
+    password: process.env.DB_PASSWORD || 'glazed-dev-password',
+    database: process.env.DB_NAME || 'tilearchive',
+  });
+  const [rows] = await conn.execute(
+    'SELECT COUNT(*) AS rowCount, COALESCE(MAX(ID), 0) AS maxId FROM testpiece WHERE Image IS NOT NULL',
+  );
+  await conn.end();
+  return `${rows[0].rowCount}:${rows[0].maxId}`;
+}
+
+async function loadSearchRows() {
+  if (!STDIO_MODE) {
+    return loadTiles();
+  }
+
+  const revision = await getTileRevision();
+  if (workerRowsCache && workerRowsRevision === revision) {
+    return workerRowsCache;
+  }
+
+  workerRowsCache = await loadTiles();
+  workerRowsRevision = revision;
+  return workerRowsCache;
+}
+
 async function runSearch(query) {
-  const rows = await loadTiles();
+  const rows = await loadSearchRows();
   if (rows.length === 0) {
     return { query, results: [], message: 'No tile images found in MariaDB.' };
   }
